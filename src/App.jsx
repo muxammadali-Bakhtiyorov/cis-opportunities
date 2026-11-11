@@ -5,12 +5,15 @@ import {
   Sparkles, X, ChevronRight, LogOut, Check
 } from 'lucide-react';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
+import AdminUsersPanel from './components/AdminUsersPanel';
+import TelegramInboxPanel from './components/TelegramInboxPanel';
 
 export default function App() {
   const [activities, setActivities] = useState([]);
   const [authUser, setAuthUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [activeTab, setActiveTab] = useState('catalog'); // 'catalog', 'profile', 'admin'
+  const [adminSection, setAdminSection] = useState('activities');
   const [favorites, setFavorites] = useState(() => {
     const saved = localStorage.getItem('cis_favorites');
     return saved ? JSON.parse(saved) : {}; // id -> priority ('high' | 'medium' | 'low')
@@ -31,6 +34,7 @@ export default function App() {
 
   // Модальное окно создания ивента (для админа)
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [pendingDraftId, setPendingDraftId] = useState(null);
   const [newEvent, setNewEvent] = useState({
     title: '', category: 'Олимпиада', format: 'Онлайн', age: '14-18 лет',
     deadline: '', location: '', description: '', link: ''
@@ -193,30 +197,80 @@ export default function App() {
   const handleCreateEvent = async (e) => {
     e.preventDefault();
     if (!supabase) return;
-    const { data, error } = await supabase
-      .from('activities')
-      .insert({
-        title: newEvent.title,
-        category: newEvent.category,
-        format: newEvent.format,
-        age: newEvent.age,
-        deadline: newEvent.deadline || null,
-        location: newEvent.location,
-        description: newEvent.description,
-        link: newEvent.link,
-        active: true
-      })
-      .select()
-      .single();
 
-    if (error) {
-      setErrorMessage(`Не удалось создать активность: ${error.message}`);
+    let activity;
+    if (pendingDraftId) {
+      const { data, error } = await supabase.rpc('publish_telegram_event_draft', {
+        _draft_id: pendingDraftId,
+        _title: newEvent.title,
+        _category: newEvent.category,
+        _format: newEvent.format,
+        _age: newEvent.age,
+        _deadline: newEvent.deadline || null,
+        _location: newEvent.location,
+        _description: newEvent.description,
+        _link: newEvent.link
+      });
+
+      if (error) {
+        setErrorMessage(`Не удалось опубликовать черновик: ${error.message}`);
+        return;
+      }
+      activity = Array.isArray(data) ? data[0] : data;
+    } else {
+      const { data, error } = await supabase
+        .from('activities')
+        .insert({
+          title: newEvent.title,
+          category: newEvent.category,
+          format: newEvent.format,
+          age: newEvent.age,
+          deadline: newEvent.deadline || null,
+          location: newEvent.location,
+          description: newEvent.description,
+          link: newEvent.link,
+          active: true
+        })
+        .select()
+        .single();
+
+      if (error) {
+        setErrorMessage(`Не удалось создать активность: ${error.message}`);
+        return;
+      }
+      activity = data;
+    }
+
+    if (!activity) {
+      setErrorMessage('Активность не была возвращена базой данных.');
       return;
     }
     setErrorMessage('');
-    setActivities(current => [data, ...current]);
+    setActivities(current => [activity, ...current]);
+    setPendingDraftId(null);
     setNewEvent({ title: '', category: 'Олимпиада', format: 'Онлайн', age: '14-18 лет', deadline: '', location: '', description: '', link: '' });
     setIsModalOpen(false);
+  };
+
+  const handleSelectTelegramDraft = (draft, suggestions) => {
+    setNewEvent({
+      title: suggestions.title,
+      category: suggestions.category,
+      format: 'Онлайн',
+      age: '',
+      deadline: suggestions.deadline,
+      location: '',
+      description: draft.message_text,
+      link: suggestions.link
+    });
+    setPendingDraftId(draft.id);
+    setAdminSection('activities');
+    setIsModalOpen(true);
+  };
+
+  const closeEventModal = () => {
+    setIsModalOpen(false);
+    setPendingDraftId(null);
   };
 
   const handleDeleteEvent = async (id) => {
@@ -519,20 +573,47 @@ export default function App() {
         {/* ВКЛАДКА: ПАНЕЛЬ АДМИНА */}
         {activeTab === 'admin' && isAdmin && (
           <div className="max-w-5xl mx-auto">
-            <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-6 flex justify-between items-center">
-              <div>
-                <h2 className="text-xl font-bold text-slate-900">Панель администратора</h2>
-                <p className="text-sm text-slate-500">Управление объявлениями, ссылками и статусами активностей</p>
+            <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-6">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h2 className="text-xl font-bold text-slate-900">Панель администратора</h2>
+                  <p className="text-sm text-slate-500">Управление объявлениями, пользователями и Telegram-черновиками</p>
+                </div>
+                {adminSection === 'activities' && (
+                  <button
+                    onClick={() => {
+                      setPendingDraftId(null);
+                      setNewEvent({
+                        title: '', category: 'Олимпиада', format: 'Онлайн', age: '14-18 лет',
+                        deadline: '', location: '', description: '', link: ''
+                      });
+                      setIsModalOpen(true);
+                    }}
+                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl font-medium text-sm flex items-center gap-2 shadow-sm transition"
+                  >
+                    <Plus className="w-4 h-4" /> Создать ивент
+                  </button>
+                )}
               </div>
-              <button 
-                onClick={() => setIsModalOpen(true)}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl font-medium text-sm flex items-center gap-2 shadow-sm transition"
-              >
-                <Plus className="w-4 h-4" /> Создать ивент
-              </button>
+              <div className="mt-5 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
+                {[
+                  ['activities', 'Активности'],
+                  ['users', 'Пользователи'],
+                  ['telegram', 'Telegram']
+                ].map(([section, label]) => (
+                  <button
+                    key={section}
+                    onClick={() => setAdminSection(section)}
+                    className={`rounded-lg px-4 py-2 text-sm font-medium transition ${adminSection === section ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+            {adminSection === 'activities' && (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
@@ -584,7 +665,10 @@ export default function App() {
                   </tbody>
                 </table>
               </div>
-            </div>
+              </div>
+            )}
+            {adminSection === 'users' && <AdminUsersPanel currentUserId={authUser?.id} />}
+            {adminSection === 'telegram' && <TelegramInboxPanel onSelectDraft={handleSelectTelegramDraft} />}
           </div>
         )}
 
@@ -595,8 +679,10 @@ export default function App() {
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl border border-slate-200">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold text-slate-900">Новое объявление об ивенте</h3>
-              <button onClick={() => setIsModalOpen(false)} className="p-1 rounded-lg text-slate-400 hover:bg-slate-100">
+              <h3 className="text-lg font-bold text-slate-900">
+                {pendingDraftId ? 'Проверка Telegram-черновика' : 'Новое объявление об ивенте'}
+              </h3>
+              <button onClick={closeEventModal} className="p-1 rounded-lg text-slate-400 hover:bg-slate-100">
                 <X className="w-5 h-5" />
               </button>
             </div>
@@ -705,7 +791,7 @@ export default function App() {
               <div className="flex justify-end gap-3 pt-2">
                 <button 
                   type="button" 
-                  onClick={() => setIsModalOpen(false)}
+                  onClick={closeEventModal}
                   className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-medium transition"
                 >
                   Отмена
