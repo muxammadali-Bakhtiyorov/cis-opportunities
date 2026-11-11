@@ -4,60 +4,25 @@ import {
   ExternalLink, CheckCircle, Clock, MapPin, Users, Calendar, 
   Sparkles, X, ChevronRight, LogOut, Check
 } from 'lucide-react';
-
-// Начальные демо-данные активностей
-const initialActivities = [
-  {
-    id: 1,
-    title: 'Международная олимпиада по физике "Физтех.International"',
-    category: 'Олимпиада',
-    format: 'Онлайн / Очно',
-    age: '14–18 лет',
-    deadline: '2026-04-15',
-    location: 'Москва / Онлайн',
-    description: 'Масштабная олимпиада для школьников стран СНГ, дающая льготы при поступлении в ведущие технические вузы РФ.',
-    link: 'https://mipt.ru',
-    active: true
-  },
-  {
-    id: 2,
-    title: 'Волонтерский форум молодежи Центральной Азии',
-    category: 'Волонтерство',
-    format: 'Очно',
-    age: '16–25 лет',
-    deadline: '2026-05-01',
-    location: 'Алматы, Казахстан',
-    description: 'Трехдневный форум для лидеров социальных инициатив и волонтеров. Полное покрытие расходов на проживание.',
-    link: 'https://example.com/volunteer',
-    active: true
-  },
-  {
-    id: 3,
-    title: 'Летняя стажировка для IT-студентов в InDrive',
-    category: 'Стажировка',
-    format: 'Гибрид',
-    age: '18–22 года',
-    deadline: '2026-05-20',
-    location: 'Астана / Удаленно',
-    description: 'Оплачиваемая летняя стажировка по направлениям Frontend, Backend и Product Design с возможностью оффера.',
-    link: 'https://indriver.com/careers',
-    active: true
-  }
-];
+import { isSupabaseConfigured, supabase } from './lib/supabase';
 
 export default function App() {
-  // Состояния приложения
-  const [activities, setActivities] = useState(() => {
-    const saved = localStorage.getItem('cis_activities');
-    return saved ? JSON.parse(saved) : initialActivities;
-  });
-
-  const [user, setUser] = useState({ name: 'Студент СНГ', email: 'student@mail.com', role: 'student' });
+  const [activities, setActivities] = useState([]);
+  const [authUser, setAuthUser] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [activeTab, setActiveTab] = useState('catalog'); // 'catalog', 'profile', 'admin'
   const [favorites, setFavorites] = useState(() => {
     const saved = localStorage.getItem('cis_favorites');
     return saved ? JSON.parse(saved) : {}; // id -> priority ('high' | 'medium' | 'low')
   });
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [activitiesLoading, setActivitiesLoading] = useState(true);
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [authMode, setAuthMode] = useState('login');
+  const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' });
+  const [authMessage, setAuthMessage] = useState('');
+  const [errorMessage, setErrorMessage] = useState('');
 
   // Фильтры
   const [searchQuery, setSearchQuery] = useState('');
@@ -71,14 +36,146 @@ export default function App() {
     deadline: '', location: '', description: '', link: ''
   });
 
-  // Сохранение в localStorage
-  useEffect(() => {
-    localStorage.setItem('cis_activities', JSON.stringify(activities));
-  }, [activities]);
-
   useEffect(() => {
     localStorage.setItem('cis_favorites', JSON.stringify(favorites));
   }, [favorites]);
+
+  useEffect(() => {
+    if (!supabase) {
+      setAuthLoading(false);
+      setActivitiesLoading(false);
+      return;
+    }
+
+    let isMounted = true;
+    const loadSession = async () => {
+      const { data, error } = await supabase.auth.getSession();
+      if (!isMounted) return;
+      if (error) setErrorMessage(`Не удалось проверить сессию: ${error.message}`);
+      setAuthUser(data.session?.user ?? null);
+      setAuthLoading(false);
+    };
+
+    loadSession();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthUser(session?.user ?? null);
+      setAuthLoading(false);
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) return;
+    let isMounted = true;
+
+    const loadActivities = async () => {
+      setActivitiesLoading(true);
+      const { data, error } = await supabase
+        .from('activities')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!isMounted) return;
+      if (error) {
+        setErrorMessage(`Не удалось загрузить активности: ${error.message}`);
+      } else {
+        setActivities(data);
+      }
+      setActivitiesLoading(false);
+    };
+
+    loadActivities();
+    return () => {
+      isMounted = false;
+    };
+  }, [authUser?.id]);
+
+  useEffect(() => {
+    if (!supabase || !authUser) {
+      setIsAdmin(false);
+      return;
+    }
+
+    let isMounted = true;
+    setIsAdmin(false);
+    const loadRole = async () => {
+      const { data, error } = await supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', authUser.id)
+        .maybeSingle();
+
+      if (!isMounted) return;
+      if (error) {
+        setIsAdmin(false);
+        setErrorMessage(`Не удалось проверить права доступа: ${error.message}`);
+      } else {
+        setIsAdmin(data?.role === 'admin');
+      }
+    };
+
+    loadRole();
+    return () => {
+      isMounted = false;
+    };
+  }, [authUser]);
+
+  useEffect(() => {
+    if (!isAdmin && activeTab === 'admin') setActiveTab('catalog');
+  }, [isAdmin, activeTab]);
+
+  const handleAuthSubmit = async (e) => {
+    e.preventDefault();
+    if (!supabase) {
+      setErrorMessage('Supabase не настроен. Добавьте URL проекта и publishable key в файл .env.local.');
+      return;
+    }
+
+    setErrorMessage('');
+    setAuthMessage('');
+    setAuthSubmitting(true);
+    let result;
+    try {
+      result = authMode === 'login'
+        ? await supabase.auth.signInWithPassword({
+            email: authForm.email,
+            password: authForm.password
+          })
+        : await supabase.auth.signUp({
+            email: authForm.email,
+            password: authForm.password,
+            options: { data: { full_name: authForm.name } }
+          });
+    } catch (error) {
+      setErrorMessage(`Ошибка авторизации: ${error.message}`);
+      setAuthSubmitting(false);
+      return;
+    }
+    setAuthSubmitting(false);
+
+    if (result.error) {
+      setErrorMessage(`Ошибка авторизации: ${result.error.message}`);
+      return;
+    }
+
+    if (authMode === 'register' && !result.data.session) {
+      setAuthMessage('Проверьте почту и подтвердите адрес, чтобы войти.');
+      setAuthModalOpen(false);
+    } else {
+      setAuthModalOpen(false);
+    }
+    setAuthForm({ name: '', email: '', password: '' });
+  };
+
+  const handleLogout = async () => {
+    if (!supabase) return;
+    const { error } = await supabase.auth.signOut();
+    if (error) setErrorMessage(`Не удалось выйти: ${error.message}`);
+  };
 
   // Переключение избранного и приоритета
   const toggleFavorite = (id, priority = 'medium') => {
@@ -93,39 +190,73 @@ export default function App() {
     });
   };
 
-  // Добавление ивента админом
-  const handleCreateEvent = (e) => {
+  const handleCreateEvent = async (e) => {
     e.preventDefault();
-    if (!newEvent.title || !newEvent.description) return;
-    const item = {
-      id: Date.now(),
-      ...newEvent,
-      active: true
-    };
-    setActivities([item, ...activities]);
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('activities')
+      .insert({
+        title: newEvent.title,
+        category: newEvent.category,
+        format: newEvent.format,
+        age: newEvent.age,
+        deadline: newEvent.deadline || null,
+        location: newEvent.location,
+        description: newEvent.description,
+        link: newEvent.link,
+        active: true
+      })
+      .select()
+      .single();
+
+    if (error) {
+      setErrorMessage(`Не удалось создать активность: ${error.message}`);
+      return;
+    }
+    setErrorMessage('');
+    setActivities(current => [data, ...current]);
     setNewEvent({ title: '', category: 'Олимпиада', format: 'Онлайн', age: '14-18 лет', deadline: '', location: '', description: '', link: '' });
     setIsModalOpen(false);
   };
 
-  // Удаление ивента админом
-  const handleDeleteEvent = (id) => {
-    setActivities(activities.filter(item => item.id !== id));
+  const handleDeleteEvent = async (id) => {
+    if (!supabase) return;
+    const { error } = await supabase.from('activities').delete().eq('id', id);
+    if (error) {
+      setErrorMessage(`Не удалось удалить активность: ${error.message}`);
+      return;
+    }
+    setErrorMessage('');
+    setActivities(current => current.filter(item => item.id !== id));
   };
 
-  // Переключение статуса активность/неактивность
-  const handleToggleActive = (id) => {
-    setActivities(activities.map(item => item.id === id ? { ...item, active: !item.active } : item));
+  const handleToggleActive = async (item) => {
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('activities')
+      .update({ active: !item.active })
+      .eq('id', item.id)
+      .select()
+      .single();
+
+    if (error) {
+      setErrorMessage(`Не удалось изменить статус активности: ${error.message}`);
+      return;
+    }
+    setErrorMessage('');
+    setActivities(current => current.map(activity => activity.id === item.id ? data : activity));
   };
 
   // Фильтрация
   const filteredActivities = activities.filter(item => {
-    if (!item.active && user.role !== 'admin') return false;
+    if (!item.active && !isAdmin) return false;
     const matchesSearch = item.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
                           item.description.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesCat = selectedCategory === 'Все' || item.category === selectedCategory;
     const matchesFormat = selectedFormat === 'Все' || item.format.includes(selectedFormat);
     return matchesSearch && matchesCat && matchesFormat;
   });
+  const userName = authUser?.user_metadata?.full_name || authUser?.email;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
@@ -142,7 +273,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-center gap-2">
             <button 
               onClick={() => setActiveTab('catalog')}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'catalog' ? 'bg-indigo-700 text-white shadow' : 'text-indigo-200 hover:bg-indigo-800'}`}
@@ -156,7 +287,7 @@ export default function App() {
               <Bookmark className="w-4 h-4 text-amber-400" />
               Моё портфолио ({Object.keys(favorites).length})
             </button>
-            {user.role === 'admin' && (
+            {isAdmin && (
               <button 
                 onClick={() => setActiveTab('admin')}
                 className={`px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-1.5 ${activeTab === 'admin' ? 'bg-indigo-700 text-white shadow' : 'text-indigo-200 hover:bg-indigo-800'}`}
@@ -165,21 +296,49 @@ export default function App() {
                 Админ-панель
               </button>
             )}
-
-            {/* Быстрое переключение роли для теста */}
-            <button 
-              onClick={() => setUser(prev => ({ ...prev, role: prev.role === 'admin' ? 'student' : 'admin' }))}
-              className="ml-4 text-xs bg-indigo-800 hover:bg-indigo-700 text-indigo-200 px-3 py-2 rounded-lg border border-indigo-700 transition"
-              title="Переключить режим Студент / Админ"
-            >
-              Роль: <span className="font-bold text-white">{user.role === 'admin' ? '👑 Админ' : '🎓 Студент'}</span>
-            </button>
+            {authUser ? (
+              <>
+                <span className="text-xs text-indigo-200 hidden lg:inline">{userName}</span>
+                <button
+                  onClick={handleLogout}
+                  className="px-3 py-2 rounded-lg text-sm font-medium text-indigo-200 hover:bg-indigo-800 transition flex items-center gap-1.5"
+                >
+                  <LogOut className="w-4 h-4" /> Выйти
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => { setAuthMode('login'); setAuthMessage(''); setAuthModalOpen(true); }}
+                disabled={authLoading}
+                className="px-4 py-2 rounded-lg text-sm font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 transition"
+              >
+                Войти
+              </button>
+            )}
           </div>
         </div>
       </header>
 
       {/* Основной контент */}
       <main className="max-w-7xl mx-auto px-4 py-8">
+        {!isSupabaseConfigured && (
+          <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+            Supabase не настроен. Создайте `.env.local` с `VITE_SUPABASE_URL` и `VITE_SUPABASE_PUBLISHABLE_KEY`, затем перезапустите сайт.
+          </div>
+        )}
+        {errorMessage && (
+          <div role="alert" className="mb-6 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+            {errorMessage}
+          </div>
+        )}
+        {authMessage && (
+          <div role="status" className="mb-6 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+            {authMessage}
+          </div>
+        )}
+        {activitiesLoading && isSupabaseConfigured && (
+          <div className="mb-6 text-center text-sm text-slate-500">Загрузка активностей...</div>
+        )}
         
         {/* ВКЛАДКА: КАТАЛОГ */}
         {activeTab === 'catalog' && (
@@ -197,7 +356,7 @@ export default function App() {
                     className="w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
                   />
                 </div>
-                {user.role === 'admin' && (
+                {isAdmin && (
                   <button 
                     onClick={() => setIsModalOpen(true)}
                     className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-3 rounded-xl font-medium text-sm flex items-center justify-center gap-2 shadow-sm transition"
@@ -286,7 +445,7 @@ export default function App() {
               })}
             </div>
 
-            {filteredActivities.length === 0 && (
+            {!activitiesLoading && filteredActivities.length === 0 && (
               <div className="text-center py-16 bg-white rounded-2xl border border-slate-200">
                 <p className="text-slate-500 text-base">Активностей по вашему запросу не найдено.</p>
               </div>
@@ -358,7 +517,7 @@ export default function App() {
         )}
 
         {/* ВКЛАДКА: ПАНЕЛЬ АДМИНА */}
-        {activeTab === 'admin' && user.role === 'admin' && (
+        {activeTab === 'admin' && isAdmin && (
           <div className="max-w-5xl mx-auto">
             <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-6 flex justify-between items-center">
               <div>
@@ -394,7 +553,7 @@ export default function App() {
                         <td className="p-4 text-slate-600 text-xs">{item.deadline}</td>
                         <td className="p-4">
                           <button 
-                            onClick={() => handleToggleActive(item.id)}
+                            onClick={() => handleToggleActive(item)}
                             className={`px-3 py-1 rounded-full text-xs font-semibold transition ${item.active ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'}`}
                           >
                             {item.active ? 'Активен' : 'Скрыт'}
@@ -443,6 +602,9 @@ export default function App() {
             </div>
 
             <form onSubmit={handleCreateEvent} className="space-y-4">
+              {errorMessage && (
+                <p role="alert" className="text-sm text-rose-700">{errorMessage}</p>
+              )}
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">Название активности</label>
                 <input 
@@ -556,6 +718,75 @@ export default function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {authModalOpen && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200">
+            <div className="flex justify-between items-center mb-5">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900">
+                  {authMode === 'login' ? 'Вход в аккаунт' : 'Регистрация студента'}
+                </h2>
+                <p className="text-xs text-slate-500 mt-1">Администраторские права назначаются отдельно.</p>
+              </div>
+              <button onClick={() => setAuthModalOpen(false)} className="p-1 rounded-lg text-slate-400 hover:bg-slate-100">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleAuthSubmit} className="space-y-4">
+              {authMode === 'register' && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 mb-1">Имя</label>
+                  <input
+                    type="text"
+                    required
+                    value={authForm.name}
+                    onChange={e => setAuthForm({ ...authForm, name: e.target.value })}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm"
+                  />
+                </div>
+              )}
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Электронная почта</label>
+                <input
+                  type="email"
+                  required
+                  value={authForm.email}
+                  onChange={e => setAuthForm({ ...authForm, email: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Пароль</label>
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={authForm.password}
+                  onChange={e => setAuthForm({ ...authForm, password: e.target.value })}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm"
+                />
+              </div>
+              {errorMessage && (
+                <p role="alert" className="text-sm text-rose-700">{errorMessage}</p>
+              )}
+              <button
+                type="submit"
+                disabled={authSubmitting}
+                className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+              >
+                {authSubmitting ? 'Подождите...' : authMode === 'login' ? 'Войти' : 'Создать аккаунт'}
+              </button>
+            </form>
+            <button
+              onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthMessage(''); setErrorMessage(''); }}
+              className="mt-4 w-full text-center text-xs text-indigo-600 hover:underline font-semibold"
+            >
+              {authMode === 'login' ? 'Нет аккаунта? Зарегистрируйтесь' : 'Уже есть аккаунт? Войти'}
+            </button>
           </div>
         </div>
       )}
