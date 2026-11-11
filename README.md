@@ -35,6 +35,8 @@ A centralized platform that aggregates active opportunities, provides precise fi
 3. Run the migrations in order in the Supabase SQL Editor:
    - `supabase/migrations/20261111000000_supabase_admin_access.sql`
    - `supabase/migrations/20261111210000_admin_users_telegram_inbox.sql`
+   - `supabase/migrations/20261111223000_telegram_message_entities.sql`
+   If you already ran the first two migrations, run only the new third migration.
 4. Install dependencies and start the app with `npm install` and `npm run dev`.
 5. Register the first admin, then promote that account in the SQL Editor by replacing the email below:
 
@@ -68,6 +70,6 @@ The admin panel can receive manually forwarded Telegram posts as drafts. This do
    The existing `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` variables must also be configured in Vercel.
 3. Redeploy after saving the environment variables, sign in as an admin, open **Admin → Telegram**, and select **Connect webhook**.
 4. Send `/id` to the bot, then add that numeric Telegram ID to the panel's allowed-senders list. Only IDs on that list can submit drafts.
-5. Forward a post to the bot. Admins can review and edit its suggested title, category, deadline, and link before publishing it as an activity.
+5. Forward a post to the bot. Admins can review the original text with its embedded links, edit suggested title, category, country, age, deadline, and link, or choose manual entry before publishing it as an activity.
 
 Keep the bot token, webhook secret, and Supabase service-role key private. If any of these values have been shared publicly, rotate them before enabling the webhook.

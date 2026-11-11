@@ -15,6 +15,19 @@ const monthNames = {
 
 const datePattern = String.raw`(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}[./-]\d{1,2}[./-]\d{2,4}|\d{1,2}\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|январ(?:я|ь|е)?|феврал(?:я|ь|е)?|март(?:а|е)?|апрел(?:я|ь|е)?|ма[йяе]|июн(?:я|ь|е)?|июл(?:я|ь|е)?|август(?:а|е)?|сентябр(?:я|ь|е)?|октябр(?:я|ь|е)?|ноябр(?:я|ь|е)?|декабр(?:я|ь|е)?)\s+\d{4})`;
 
+const countryPatterns = [
+  ['Казахстан', /казахстан(?:а|е|у|ом)?/iu],
+  ['Узбекистан', /узбекистан(?:а|е|у|ом)?/iu],
+  ['Россия', /росси(?:я|и|ю|ей)/iu],
+  ['Кыргызстан', /кыргызстан(?:а|е|у|ом)?|киргизия|киргизии/iu],
+  ['Таджикистан', /таджикистан(?:а|е|у|ом)?/iu],
+  ['Туркменистан', /туркменистан(?:а|е|у|ом)?/iu],
+  ['Беларусь', /беларус(?:ь|и|ью)/iu],
+  ['Армения', /армени(?:я|и|ю|ей)/iu],
+  ['Азербайджан', /азербайджан(?:а|е|у|ом)?/iu],
+  ['Грузия', /грузи(?:я|и|ю|ей)/iu]
+];
+
 function toIsoDate(year, month, day) {
   const date = new Date(Date.UTC(year, month - 1, day));
   if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
@@ -45,35 +58,95 @@ function parseDate(value) {
 
 function extractDeadline(text) {
   const marker = new RegExp(
-    String.raw`(?:дедлайн|регистрация\s+до|при[её]м\s+до|до|deadline|apply\s+by|register\s+by)\s*[:—–-]?\s*(${datePattern})`,
+    String.raw`(?:дедлайн|срок\s+подачи|последний\s+день|заявки?\s+(?:принимаются|до)|регистрация\s+до|при[её]м(?:\s+заявок)?\s+до|до|deadline|apply\s+by|register\s+by)\s*[:—–-]?\s*(${datePattern})`,
     'iu'
   );
   const match = text.match(marker);
   return match ? parseDate(match[1]) : '';
 }
 
-function extractLink(text) {
-  const match = text.match(/https?:\/\/[^\s<>]+/i);
-  return match ? match[0].replace(/[),.!?;:]+$/, '') : '';
+function safeHttpUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+export function extractTelegramLinks(message, entities = []) {
+  const text = String(message || '');
+  const links = [];
+
+  for (const entity of Array.isArray(entities) ? entities : []) {
+    if (!['text_link', 'url'].includes(entity?.type)) continue;
+    const offset = Number(entity.offset);
+    const length = Number(entity.length);
+    if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(length) || offset < 0 || length < 1) continue;
+
+    const label = text.slice(offset, offset + length);
+    const url = safeHttpUrl(entity.type === 'text_link' ? entity.url : label);
+    if (!url || !label) continue;
+    links.push({ url, offset, length, label });
+  }
+
+  const plainUrlPattern = /https?:\/\/[^\s<>]+/gi;
+  for (const match of text.matchAll(plainUrlPattern)) {
+    const rawUrl = match[0].replace(/[),.!?;:]+$/, '');
+    const url = safeHttpUrl(rawUrl);
+    if (!url) continue;
+    const offset = match.index;
+    const length = rawUrl.length;
+    const overlaps = links.some(link => offset < link.offset + link.length && offset + length > link.offset);
+    if (!overlaps) links.push({ url, offset, length, label: text.slice(offset, offset + length) });
+  }
+
+  return links.sort((a, b) => a.offset - b.offset);
 }
 
 function inferCategory(text) {
-  if (/(олимпиад|olympiad)/i.test(text)) return 'Олимпиада';
-  if (/(волонт|volunteer)/i.test(text)) return 'Волонтерство';
-  if (/(стажиров|internship)/i.test(text)) return 'Стажировка';
-  if (/(конкурс|competition|contest)/i.test(text)) return 'Конкурс';
-  return 'Олимпиада';
+  if (/хакатон|hackathon/iu.test(text)) return 'Хакатон';
+  if (/олимпиад|olympiad/iu.test(text)) return 'Олимпиада';
+  if (/волонт[её]р|volunteer/iu.test(text)) return 'Волонтерство';
+  if (/стажиров|интернатур|internship/iu.test(text)) return 'Стажировка';
+  if (/грант|стипенди/iu.test(text)) return 'Грант / стипендия';
+  if (/форум|forum/iu.test(text)) return 'Форум';
+  if (/конференц|conference/iu.test(text)) return 'Конференция';
+  if (/курс|обучени|course/iu.test(text)) return 'Курс';
+  if (/конкурс|соревнован|competition|contest/iu.test(text)) return 'Конкурс';
+  return 'Другое';
 }
 
-export function extractTelegramDraft(message) {
+function extractAge(text) {
+  const marker = /(?:возраст(?: участников|ная группа|ная категория)?|для участников|участникам)\s*[:—–-]?\s*(?:от\s*)?(\d{1,2}\s*(?:(?:до|[-–—])\s*\d{1,2})?\s*(?:лет|года|год)?\s*\+?)/iu;
+  const match = text.match(marker)
+    || text.match(/(\d{1,2}\s*(?:до|[-–—])\s*\d{1,2}\s*(?:лет|года|год))/iu);
+  if (!match) return '';
+
+  let age = match[1].replace(/\s+/g, ' ').trim().replace(/(\d)\s*[-—]\s*(\d)/, '$1–$2');
+  if (!/(?:лет|года|год|\+)$/iu.test(age)) age += ' лет';
+  return age;
+}
+
+function extractCountry(text) {
+  const marker = text.match(/(?:страна(?:\s+проведения|\s+участия)?|участники\s+из|для\s+участников\s+из|граждане)\s*[:—–-]?\s*([^\n,;.!]+)/iu);
+  if (!marker) return '';
+  return countryPatterns.find(([, pattern]) => pattern.test(marker[1]))?.[0] || '';
+}
+
+export function extractTelegramDraft(message, entities = []) {
   const text = String(message || '').trim();
   const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   const title = (lines.find(line => !/^https?:\/\//i.test(line)) || '').replace(/^[-*•#\s]+/, '').slice(0, 180);
+  const links = extractTelegramLinks(text, entities);
 
   return {
     title,
     category: inferCategory(text),
     deadline: extractDeadline(text),
-    link: extractLink(text)
+    age: extractAge(text),
+    location: extractCountry(text),
+    link: links[0]?.url || '',
+    links
   };
 }

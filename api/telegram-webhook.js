@@ -119,6 +119,19 @@ export default async function handler(req, res) {
   }
 
   const source = getForwardSource(message);
+  const rawEntities = message.text ? message.entities : message.caption_entities;
+  const entities = (Array.isArray(rawEntities) ? rawEntities : [])
+    .filter(entity => ['url', 'text_link'].includes(entity?.type)
+      && Number.isSafeInteger(entity.offset)
+      && Number.isSafeInteger(entity.length)
+      && entity.offset >= 0
+      && entity.length > 0)
+    .map(entity => ({
+      type: entity.type,
+      offset: entity.offset,
+      length: entity.length,
+      ...(typeof entity.url === 'string' ? { url: entity.url } : {})
+    }));
   const senderName = [message.from.first_name, message.from.last_name].filter(Boolean).join(' ');
   const { error: insertError } = await supabase
     .from('telegram_event_drafts')
@@ -130,7 +143,8 @@ export default async function handler(req, res) {
       source_message_id: source.messageId,
       source_channel: source.channel,
       source_date: source.date,
-      message_text: text
+      message_text: text,
+      message_entities: entities
     });
 
   if (insertError && insertError.code !== '23505') {
