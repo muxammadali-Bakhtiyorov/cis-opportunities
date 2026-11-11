@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { Bot, Send, Trash2 } from 'lucide-react';
+import { Bot, Pencil, Send, Trash2 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { extractTelegramDraft } from '../lib/telegramDraftParser';
+import TelegramMessageText from './TelegramMessageText';
 
 export default function TelegramInboxPanel({ onSelectDraft }) {
   const [senders, setSenders] = useState([]);
@@ -221,19 +222,42 @@ export default function TelegramInboxPanel({ onSelectDraft }) {
             Входящих черновиков пока нет.
           </div>
         ) : drafts.map(draft => {
-          const suggestions = extractTelegramDraft(draft.message_text);
+          const suggestions = extractTelegramDraft(draft.message_text, draft.message_entities);
           return (
             <article key={draft.id} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
                 <span>{draft.source_channel || 'Пересланное сообщение'} · от {draft.sender_name || draft.telegram_sender_id}</span>
                 <span>{new Date(draft.created_at).toLocaleString()}</span>
               </div>
-              <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-4 font-sans text-sm text-slate-700">{draft.message_text}</pre>
+              <TelegramMessageText
+                text={draft.message_text}
+                entities={draft.message_entities}
+                className="max-h-56 overflow-auto rounded-xl bg-slate-50 p-4 text-sm text-slate-700"
+              />
               <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
                 <span>Заголовок: {suggestions.title || 'не найден'}</span>
+                <span>Тип: {suggestions.category}</span>
                 <span>Дедлайн: {suggestions.deadline || 'не распознан - проверьте вручную'}</span>
-                <span>Ссылка: {suggestions.link || 'не найдена'}</span>
+                <span>Возраст: {suggestions.age || 'не найден'}</span>
+                <span>Страна: {suggestions.location || 'не найдена'}</span>
+                <span>Ссылка: {suggestions.link || 'не найдена - можно ввести вручную'}</span>
               </div>
+              {suggestions.links.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                  <span className="text-slate-500">Ссылки из поста:</span>
+                  {suggestions.links.map((link, index) => (
+                    <a
+                      key={`${link.offset}-${index}`}
+                      href={link.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="break-all font-medium text-indigo-700 underline"
+                    >
+                      {link.url}
+                    </a>
+                  ))}
+                </div>
+              )}
               <div className="mt-4 flex flex-wrap justify-end gap-2">
                 <button
                   onClick={() => rejectDraft(draft)}
@@ -243,10 +267,18 @@ export default function TelegramInboxPanel({ onSelectDraft }) {
                   Отклонить
                 </button>
                 <button
-                  onClick={() => onSelectDraft(draft, suggestions)}
+                  onClick={() => onSelectDraft(draft, suggestions, 'manual')}
+                  disabled={working}
+                  className="inline-flex items-center gap-2 rounded-xl bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200"
+                >
+                  <Pencil className="h-3.5 w-3.5" /> Ввести вручную
+                </button>
+                <button
+                  onClick={() => onSelectDraft(draft, suggestions, 'suggested')}
+                  disabled={working}
                   className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
                 >
-                  <Send className="h-3.5 w-3.5" /> Проверить и оформить
+                  <Send className="h-3.5 w-3.5" /> Использовать подсказки
                 </button>
               </div>
             </article>

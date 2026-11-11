@@ -7,6 +7,20 @@ import {
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import AdminUsersPanel from './components/AdminUsersPanel';
 import TelegramInboxPanel from './components/TelegramInboxPanel';
+import TelegramMessageText from './components/TelegramMessageText';
+import { ACTIVITY_CATEGORIES } from './lib/activityCategories';
+
+const EMPTY_EVENT = {
+  title: '',
+  category: 'Олимпиада',
+  customCategory: '',
+  format: 'Онлайн',
+  age: '14-18 лет',
+  deadline: '',
+  location: '',
+  description: '',
+  link: ''
+};
 
 export default function App() {
   const [activities, setActivities] = useState([]);
@@ -34,11 +48,8 @@ export default function App() {
 
   // Модальное окно создания ивента (для админа)
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [pendingDraftId, setPendingDraftId] = useState(null);
-  const [newEvent, setNewEvent] = useState({
-    title: '', category: 'Олимпиада', format: 'Онлайн', age: '14-18 лет',
-    deadline: '', location: '', description: '', link: ''
-  });
+  const [pendingDraft, setPendingDraft] = useState(null);
+  const [newEvent, setNewEvent] = useState({ ...EMPTY_EVENT });
 
   useEffect(() => {
     localStorage.setItem('cis_favorites', JSON.stringify(favorites));
@@ -198,12 +209,15 @@ export default function App() {
     e.preventDefault();
     if (!supabase) return;
 
+    const category = newEvent.category === 'Другое' && newEvent.customCategory.trim()
+      ? newEvent.customCategory.trim()
+      : newEvent.category;
     let activity;
-    if (pendingDraftId) {
+    if (pendingDraft) {
       const { data, error } = await supabase.rpc('publish_telegram_event_draft', {
-        _draft_id: pendingDraftId,
+        _draft_id: pendingDraft.id,
         _title: newEvent.title,
-        _category: newEvent.category,
+        _category: category,
         _format: newEvent.format,
         _age: newEvent.age,
         _deadline: newEvent.deadline || null,
@@ -222,7 +236,7 @@ export default function App() {
         .from('activities')
         .insert({
           title: newEvent.title,
-          category: newEvent.category,
+          category,
           format: newEvent.format,
           age: newEvent.age,
           deadline: newEvent.deadline || null,
@@ -247,30 +261,37 @@ export default function App() {
     }
     setErrorMessage('');
     setActivities(current => [activity, ...current]);
-    setPendingDraftId(null);
-    setNewEvent({ title: '', category: 'Олимпиада', format: 'Онлайн', age: '14-18 лет', deadline: '', location: '', description: '', link: '' });
+    setPendingDraft(null);
+    setNewEvent({ ...EMPTY_EVENT });
     setIsModalOpen(false);
   };
 
-  const handleSelectTelegramDraft = (draft, suggestions) => {
-    setNewEvent({
+  const handleSelectTelegramDraft = (draft, suggestions, mode = 'suggested') => {
+    setNewEvent(mode === 'suggested' ? {
+      ...EMPTY_EVENT,
       title: suggestions.title,
       category: suggestions.category,
-      format: 'Онлайн',
-      age: '',
+      age: suggestions.age,
       deadline: suggestions.deadline,
-      location: '',
+      location: suggestions.location,
       description: draft.message_text,
       link: suggestions.link
-    });
-    setPendingDraftId(draft.id);
+    } : { ...EMPTY_EVENT, age: '', description: '' });
+    setPendingDraft(draft);
     setAdminSection('activities');
     setIsModalOpen(true);
   };
 
   const closeEventModal = () => {
     setIsModalOpen(false);
-    setPendingDraftId(null);
+    setPendingDraft(null);
+  };
+
+  const openNewEventModal = () => {
+    setPendingDraft(null);
+    setNewEvent({ ...EMPTY_EVENT });
+    setErrorMessage('');
+    setIsModalOpen(true);
   };
 
   const handleDeleteEvent = async (id) => {
@@ -310,6 +331,10 @@ export default function App() {
     const matchesFormat = selectedFormat === 'Все' || item.format.includes(selectedFormat);
     return matchesSearch && matchesCat && matchesFormat;
   });
+  const categoryFilters = ['Все', ...new Set([
+    ...ACTIVITY_CATEGORIES.filter(category => category !== 'Другое'),
+    ...activities.map(activity => activity.category).filter(Boolean)
+  ])];
   const userName = authUser?.user_metadata?.full_name || authUser?.email;
 
   return (
@@ -412,7 +437,7 @@ export default function App() {
                 </div>
                 {isAdmin && (
                   <button 
-                    onClick={() => setIsModalOpen(true)}
+                    onClick={openNewEventModal}
                     className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-3 rounded-xl font-medium text-sm flex items-center justify-center gap-2 shadow-sm transition"
                   >
                     <Plus className="w-5 h-5" /> Добавить ивент
@@ -423,7 +448,7 @@ export default function App() {
               {/* Фильтры категорий */}
               <div className="flex flex-wrap gap-2 items-center pt-2 border-t border-slate-100">
                 <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 mr-2">Категория:</span>
-                {['Все', 'Олимпиада', 'Волонтерство', 'Стажировка', 'Конкурс'].map(cat => (
+                {categoryFilters.map(cat => (
                   <button
                     key={cat}
                     onClick={() => setSelectedCategory(cat)}
@@ -581,14 +606,7 @@ export default function App() {
                 </div>
                 {adminSection === 'activities' && (
                   <button
-                    onClick={() => {
-                      setPendingDraftId(null);
-                      setNewEvent({
-                        title: '', category: 'Олимпиада', format: 'Онлайн', age: '14-18 лет',
-                        deadline: '', location: '', description: '', link: ''
-                      });
-                      setIsModalOpen(true);
-                    }}
+                    onClick={openNewEventModal}
                     className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl font-medium text-sm flex items-center gap-2 shadow-sm transition"
                   >
                     <Plus className="w-4 h-4" /> Создать ивент
@@ -680,7 +698,7 @@ export default function App() {
           <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl border border-slate-200">
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-lg font-bold text-slate-900">
-                {pendingDraftId ? 'Проверка Telegram-черновика' : 'Новое объявление об ивенте'}
+                {pendingDraft ? 'Проверка Telegram-черновика' : 'Новое объявление об ивенте'}
               </h3>
               <button onClick={closeEventModal} className="p-1 rounded-lg text-slate-400 hover:bg-slate-100">
                 <X className="w-5 h-5" />
@@ -688,6 +706,16 @@ export default function App() {
             </div>
 
             <form onSubmit={handleCreateEvent} className="space-y-4">
+              {pendingDraft && (
+                <section className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Оригинальный пересланный пост</h4>
+                  <TelegramMessageText
+                    text={pendingDraft.message_text}
+                    entities={pendingDraft.message_entities}
+                    className="max-h-40 overflow-auto text-sm text-slate-700"
+                  />
+                </section>
+              )}
               {errorMessage && (
                 <p role="alert" className="text-sm text-rose-700">{errorMessage}</p>
               )}
@@ -708,14 +736,21 @@ export default function App() {
                   <label className="block text-xs font-medium text-slate-600 mb-1">Категория</label>
                   <select 
                     value={newEvent.category}
-                    onChange={e => setNewEvent({...newEvent, category: e.target.value})}
+                    onChange={e => setNewEvent({ ...newEvent, category: e.target.value, customCategory: '' })}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   >
-                    <option value="Олимпиада">Олимпиада</option>
-                    <option value="Волонтерство">Волонтерство</option>
-                    <option value="Стажировка">Стажировка</option>
-                    <option value="Конкурс">Конкурс</option>
+                    {ACTIVITY_CATEGORIES.map(category => <option key={category} value={category}>{category}</option>)}
                   </select>
+                  {newEvent.category === 'Другое' && (
+                    <input
+                      type="text"
+                      required
+                      value={newEvent.customCategory}
+                      onChange={e => setNewEvent({ ...newEvent, customCategory: e.target.value })}
+                      placeholder="Введите свою категорию"
+                      className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  )}
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-600 mb-1">Формат</label>
@@ -736,7 +771,6 @@ export default function App() {
                   <label className="block text-xs font-medium text-slate-600 mb-1">Дедлайн</label>
                   <input 
                     type="date" 
-                    required
                     value={newEvent.deadline}
                     onChange={e => setNewEvent({...newEvent, deadline: e.target.value})}
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -755,7 +789,7 @@ export default function App() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Место проведения</label>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Страна / место проведения</label>
                 <input 
                   type="text" 
                   value={newEvent.location}
