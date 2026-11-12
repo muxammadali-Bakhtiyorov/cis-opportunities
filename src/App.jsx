@@ -43,6 +43,7 @@ export default function App() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [passwordSubmitting, setPasswordSubmitting] = useState(false);
+  const [resetEmailSubmitting, setResetEmailSubmitting] = useState(false);
   const [accountMessage, setAccountMessage] = useState('');
   const [accountError, setAccountError] = useState('');
 
@@ -77,9 +78,13 @@ export default function App() {
     };
 
     loadSession();
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setAuthUser(session?.user ?? null);
       setAuthLoading(false);
+      if (event === 'PASSWORD_RECOVERY') {
+        setActiveTab('profile');
+        setAccountMessage('Ссылка подтверждена. Теперь задайте новый пароль ниже.');
+      }
     });
 
     return () => {
@@ -234,6 +239,29 @@ export default function App() {
     setNewPassword('');
     setConfirmPassword('');
     setAccountMessage('Пароль успешно изменён.');
+  };
+
+  const handlePasswordResetEmail = async () => {
+    setAccountMessage('');
+    setAccountError('');
+    if (!supabase || !authUser?.email) {
+      setAccountError('Не удалось определить email аккаунта для сброса пароля.');
+      return;
+    }
+
+    setResetEmailSubmitting(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(authUser.email);
+      if (error) {
+        setAccountError(`Не удалось отправить письмо для сброса: ${error.message}`);
+      } else {
+        setAccountMessage(`Письмо для сброса отправлено на ${authUser.email}. Откройте ссылку из письма, затем задайте новый пароль здесь.`);
+      }
+    } catch (error) {
+      setAccountError(`Не удалось связаться с Supabase Auth: ${error.message}. Проверьте подключение и повторите попытку.`);
+    } finally {
+      setResetEmailSubmitting(false);
+    }
   };
 
   // Переключение избранного и приоритета
@@ -626,10 +654,18 @@ export default function App() {
                   </div>
                   <button
                     type="submit"
-                    disabled={passwordSubmitting}
+                    disabled={passwordSubmitting || resetEmailSubmitting}
                     className="rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {passwordSubmitting ? 'Сохранение...' : 'Изменить пароль'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handlePasswordResetEmail}
+                    disabled={passwordSubmitting || resetEmailSubmitting}
+                    className="ml-3 rounded-xl px-4 py-2.5 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {resetEmailSubmitting ? 'Отправка письма...' : 'Не работает? Отправить ссылку для сброса'}
                   </button>
                 </form>
               </section>
