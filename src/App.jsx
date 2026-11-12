@@ -40,6 +40,11 @@ export default function App() {
   const [authForm, setAuthForm] = useState({ name: '', email: '', password: '' });
   const [authMessage, setAuthMessage] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordSubmitting, setPasswordSubmitting] = useState(false);
+  const [accountMessage, setAccountMessage] = useState('');
+  const [accountError, setAccountError] = useState('');
 
   // Фильтры
   const [searchQuery, setSearchQuery] = useState('');
@@ -190,6 +195,45 @@ export default function App() {
     if (!supabase) return;
     const { error } = await supabase.auth.signOut();
     if (error) setErrorMessage(`Не удалось выйти: ${error.message}`);
+  };
+
+  const handlePasswordChange = async (e) => {
+    e.preventDefault();
+    setAccountMessage('');
+    setAccountError('');
+
+    if (newPassword.length < 6) {
+      setAccountError('Новый пароль должен содержать не менее 6 символов.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setAccountError('Пароли не совпадают.');
+      return;
+    }
+    if (!supabase) {
+      setAccountError('Supabase не настроен.');
+      return;
+    }
+
+    setPasswordSubmitting(true);
+    let error;
+    try {
+      ({ error } = await supabase.auth.updateUser({ password: newPassword }));
+    } catch (requestError) {
+      setAccountError(`Не удалось изменить пароль: ${requestError.message}`);
+      setPasswordSubmitting(false);
+      return;
+    }
+    setPasswordSubmitting(false);
+
+    if (error) {
+      setAccountError(`Не удалось изменить пароль: ${error.message}`);
+      return;
+    }
+
+    setNewPassword('');
+    setConfirmPassword('');
+    setAccountMessage('Пароль успешно изменён.');
   };
 
   // Переключение избранного и приоритета
@@ -535,6 +579,61 @@ export default function App() {
         {/* ВКЛАДКА: ПРОФИЛЬ / ПОРТФОЛИО */}
         {activeTab === 'profile' && (
           <div className="max-w-4xl mx-auto">
+            {authUser && (
+              <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+                <h2 className="text-xl font-bold text-slate-900">Аккаунт</h2>
+                <div className="mt-4">
+                  <label htmlFor="account-email" className="mb-1 block text-xs font-medium text-slate-600">Электронная почта</label>
+                  <input
+                    id="account-email"
+                    type="email"
+                    readOnly
+                    value={authUser.email || ''}
+                    className="w-full cursor-not-allowed rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600"
+                  />
+                </div>
+                <p className="mt-3 text-xs leading-5 text-slate-500">
+                  Пароль нельзя посмотреть: Supabase не хранит его в читаемом виде. Здесь можно задать новый пароль.
+                </p>
+                <form onSubmit={handlePasswordChange} className="mt-5 space-y-3">
+                  {accountError && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{accountError}</p>}
+                  {accountMessage && <p role="status" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">{accountMessage}</p>}
+                  <div>
+                    <label htmlFor="new-password" className="mb-1 block text-xs font-medium text-slate-600">Новый пароль</label>
+                    <input
+                      id="new-password"
+                      type="password"
+                      autoComplete="new-password"
+                      minLength={6}
+                      required
+                      value={newPassword}
+                      onChange={e => setNewPassword(e.target.value)}
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="confirm-password" className="mb-1 block text-xs font-medium text-slate-600">Повторите новый пароль</label>
+                    <input
+                      id="confirm-password"
+                      type="password"
+                      autoComplete="new-password"
+                      minLength={6}
+                      required
+                      value={confirmPassword}
+                      onChange={e => setConfirmPassword(e.target.value)}
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={passwordSubmitting}
+                    className="rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {passwordSubmitting ? 'Сохранение...' : 'Изменить пароль'}
+                  </button>
+                </form>
+              </section>
+            )}
             <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-6 flex items-center justify-between">
               <div>
                 <h2 className="text-xl font-bold text-slate-900">Моё студенческое портфолио</h2>
