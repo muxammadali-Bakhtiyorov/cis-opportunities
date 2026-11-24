@@ -105,11 +105,13 @@ export function extractTelegramLinks(message, entities = []) {
 }
 
 function inferCategory(text) {
+  if (/game\s*jam|геймджем/iu.test(text)) return 'Game Jam';
   if (/хакатон|hackathon/iu.test(text)) return 'Хакатон';
   if (/олимпиад|olympiad/iu.test(text)) return 'Олимпиада';
   if (/волонт[её]р|volunteer/iu.test(text)) return 'Волонтерство';
   if (/стажиров|интернатур|internship/iu.test(text)) return 'Стажировка';
   if (/грант|стипенди/iu.test(text)) return 'Грант / стипендия';
+  if (/исследован|research/iu.test(text)) return 'Исследование';
   if (/форум|forum/iu.test(text)) return 'Форум';
   if (/конференц|conference/iu.test(text)) return 'Конференция';
   if (/курс|обучени|course/iu.test(text)) return 'Курс';

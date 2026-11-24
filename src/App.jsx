@@ -1,14 +1,35 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Search, Filter, Bookmark, User, Shield, Plus, Trash2, 
-  ExternalLink, CheckCircle, Clock, MapPin, Users, Calendar, 
-  Sparkles, X, ChevronRight, LogOut, Check
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  ArrowRight,
+  Bookmark,
+  Clock,
+  Compass,
+  ExternalLink,
+  LayoutGrid,
+  LogOut,
+  MapPin,
+  Plus,
+  Search,
+  Shield,
+  Sparkles,
+  Trash2,
+  User,
+  Users,
+  X
 } from 'lucide-react';
 import { isSupabaseConfigured, supabase } from './lib/supabase';
 import AdminUsersPanel from './components/AdminUsersPanel';
 import TelegramInboxPanel from './components/TelegramInboxPanel';
 import TelegramMessageText from './components/TelegramMessageText';
+import GoalAdvisorQuiz from './components/GoalAdvisorQuiz';
+import ScholarshipsGuide from './components/ScholarshipsGuide';
+import StudentProfilePanel from './components/StudentProfilePanel';
 import { ACTIVITY_CATEGORIES } from './lib/activityCategories';
+import {
+  getCountryById,
+  getMajorById,
+  matchActivitiesToProfile
+} from './lib/admissionsKnowledge';
 
 const EMPTY_EVENT = {
   title: '',
@@ -22,16 +43,33 @@ const EMPTY_EVENT = {
   link: ''
 };
 
+const PROFILE_STORAGE_KEY = 'cis_student_profile_v1';
+const CHECKLIST_STORAGE_KEY = 'cis_student_checklist_v1';
+const DEMOGRAPHICS_STORAGE_KEY = 'cis_student_demographics_v1';
+
+function readStoredJson(key, fallback) {
+  try {
+    const saved = localStorage.getItem(key);
+    return saved ? JSON.parse(saved) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 export default function App() {
   const [activities, setActivities] = useState([]);
   const [authUser, setAuthUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [activeTab, setActiveTab] = useState('catalog'); // 'catalog', 'profile', 'admin'
+  const [activeTab, setActiveTab] = useState('catalog'); // 'catalog' | 'advisor' | 'scholarships' | 'profile' | 'admin'
   const [adminSection, setAdminSection] = useState('activities');
-  const [favorites, setFavorites] = useState(() => {
-    const saved = localStorage.getItem('cis_favorites');
-    return saved ? JSON.parse(saved) : {}; // id -> priority ('high' | 'medium' | 'low')
-  });
+  const [scholarshipRegion, setScholarshipRegion] = useState('all');
+
+  const [favorites, setFavorites] = useState(() => readStoredJson('cis_favorites', {}));
+  const [studentProfile, setStudentProfile] = useState(() => readStoredJson(PROFILE_STORAGE_KEY, null));
+  const [demographicInfo, setDemographicInfo] = useState(() => readStoredJson(DEMOGRAPHICS_STORAGE_KEY, null));
+  const [completedChecklist, setCompletedChecklist] = useState(() => readStoredJson(CHECKLIST_STORAGE_KEY, {}));
+  const [sortByMatch, setSortByMatch] = useState(false);
+
   const [authLoading, setAuthLoading] = useState(true);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [activitiesLoading, setActivitiesLoading] = useState(true);
@@ -47,7 +85,7 @@ export default function App() {
   const [accountMessage, setAccountMessage] = useState('');
   const [accountError, setAccountError] = useState('');
 
-  // Фильтры
+  // Фильтры каталога
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('Все');
   const [selectedFormat, setSelectedFormat] = useState('Все');
@@ -62,6 +100,22 @@ export default function App() {
   }, [favorites]);
 
   useEffect(() => {
+    if (studentProfile) {
+      localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(studentProfile));
+    }
+  }, [studentProfile]);
+
+  useEffect(() => {
+    if (demographicInfo) {
+      localStorage.setItem(DEMOGRAPHICS_STORAGE_KEY, JSON.stringify(demographicInfo));
+    }
+  }, [demographicInfo]);
+
+  useEffect(() => {
+    localStorage.setItem(CHECKLIST_STORAGE_KEY, JSON.stringify(completedChecklist));
+  }, [completedChecklist]);
+
+  useEffect(() => {
     if (!supabase) {
       setAuthLoading(false);
       setActivitiesLoading(false);
@@ -69,17 +123,37 @@ export default function App() {
     }
 
     let isMounted = true;
+    const syncMetadataFromUser = user => {
+      if (!user?.user_metadata) return;
+      const remoteProfile = user.user_metadata.admission_profile;
+      const remoteChecklist = user.user_metadata.checklist_progress;
+      const remoteDemographics = user.user_metadata.demographic_info;
+      if (remoteProfile && typeof remoteProfile === 'object') {
+        setStudentProfile(prev => prev || remoteProfile);
+      }
+      if (remoteDemographics && typeof remoteDemographics === 'object') {
+        setDemographicInfo(prev => prev || remoteDemographics);
+      }
+      if (remoteChecklist && typeof remoteChecklist === 'object') {
+        setCompletedChecklist(prev => ({ ...remoteChecklist, ...prev }));
+      }
+    };
+
     const loadSession = async () => {
       const { data, error } = await supabase.auth.getSession();
       if (!isMounted) return;
       if (error) setErrorMessage(`Не удалось проверить сессию: ${error.message}`);
-      setAuthUser(data.session?.user ?? null);
+      const sessionUser = data.session?.user ?? null;
+      setAuthUser(sessionUser);
+      syncMetadataFromUser(sessionUser);
       setAuthLoading(false);
     };
 
     loadSession();
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      setAuthUser(session?.user ?? null);
+      const sessionUser = session?.user ?? null;
+      setAuthUser(sessionUser);
+      syncMetadataFromUser(sessionUser);
       setAuthLoading(false);
       if (event === 'PASSWORD_RECOVERY') {
         setActiveTab('profile');
@@ -153,7 +227,51 @@ export default function App() {
     if (!isAdmin && activeTab === 'admin') setActiveTab('catalog');
   }, [isAdmin, activeTab]);
 
-  const handleAuthSubmit = async (e) => {
+  const handleSaveStudentProfile = async nextProfile => {
+    setStudentProfile(nextProfile);
+    setSortByMatch(true);
+    if (supabase && authUser) {
+      try {
+        await supabase.auth.updateUser({
+          data: { admission_profile: nextProfile }
+        });
+      } catch {
+        // Локальное сохранение уже выполнено
+      }
+    }
+  };
+
+  const handleSaveDemographicInfo = async nextDemographics => {
+    setDemographicInfo(nextDemographics);
+    if (supabase && authUser) {
+      try {
+        await supabase.auth.updateUser({
+          data: { demographic_info: nextDemographics }
+        });
+      } catch {
+        // Локальное сохранение уже выполнено
+      }
+    }
+  };
+
+  const handleToggleChecklistItem = async key => {
+    const nextChecklist = {
+      ...completedChecklist,
+      [key]: !completedChecklist[key]
+    };
+    setCompletedChecklist(nextChecklist);
+    if (supabase && authUser) {
+      try {
+        await supabase.auth.updateUser({
+          data: { checklist_progress: nextChecklist }
+        });
+      } catch {
+        // Локальное сохранение уже выполнено
+      }
+    }
+  };
+
+  const handleAuthSubmit = async e => {
     e.preventDefault();
     if (!supabase) {
       setErrorMessage('Supabase не настроен. Добавьте URL проекта и publishable key в файл .env.local.');
@@ -202,7 +320,7 @@ export default function App() {
     if (error) setErrorMessage(`Не удалось выйти: ${error.message}`);
   };
 
-  const handlePasswordChange = async (e) => {
+  const handlePasswordChange = async e => {
     e.preventDefault();
     setAccountMessage('');
     setAccountError('');
@@ -264,7 +382,6 @@ export default function App() {
     }
   };
 
-  // Переключение избранного и приоритета
   const toggleFavorite = (id, priority = 'medium') => {
     setFavorites(prev => {
       const copy = { ...prev };
@@ -277,7 +394,22 @@ export default function App() {
     });
   };
 
-  const handleCreateEvent = async (e) => {
+  const updateFavoritePriority = (id, priority) => {
+    setFavorites(prev => ({
+      ...prev,
+      [id]: priority
+    }));
+  };
+
+  const removeFavorite = id => {
+    setFavorites(prev => {
+      const copy = { ...prev };
+      delete copy[id];
+      return copy;
+    });
+  };
+
+  const handleCreateEvent = async e => {
     e.preventDefault();
     if (!supabase) return;
 
@@ -366,7 +498,7 @@ export default function App() {
     setIsModalOpen(true);
   };
 
-  const handleDeleteEvent = async (id) => {
+  const handleDeleteEvent = async id => {
     if (!supabase) return;
     const { error } = await supabase.from('activities').delete().eq('id', id);
     if (error) {
@@ -377,7 +509,7 @@ export default function App() {
     setActivities(current => current.filter(item => item.id !== id));
   };
 
-  const handleToggleActive = async (item) => {
+  const handleToggleActive = async item => {
     if (!supabase) return;
     const { data, error } = await supabase
       .from('activities')
@@ -394,74 +526,129 @@ export default function App() {
     setActivities(current => current.map(activity => activity.id === item.id ? data : activity));
   };
 
-  // Фильтрация
-  const filteredActivities = activities.filter(item => {
-    if (!item.active && !isAdmin) return false;
-    const matchesSearch = item.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          item.description.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCat = selectedCategory === 'Все' || item.category === selectedCategory;
-    const matchesFormat = selectedFormat === 'Все' || item.format.includes(selectedFormat);
-    return matchesSearch && matchesCat && matchesFormat;
-  });
-  const categoryFilters = ['Все', ...new Set([
-    ...ACTIVITY_CATEGORIES.filter(category => category !== 'Другое'),
-    ...activities.map(activity => activity.category).filter(Boolean)
-  ])];
+  const matchLookup = useMemo(() => {
+    if (!studentProfile) return new Map();
+    const matches = matchActivitiesToProfile(activities, studentProfile);
+    return new Map(matches.map(entry => [entry.activity.id, entry]));
+  }, [activities, studentProfile]);
+
+  const filteredActivities = useMemo(() => {
+    const base = activities.filter(item => {
+      if (!item.active && !isAdmin) return false;
+      const q = searchQuery.toLowerCase();
+      const matchesSearch =
+        (item.title || '').toLowerCase().includes(q) ||
+        (item.description || '').toLowerCase().includes(q) ||
+        (item.location || '').toLowerCase().includes(q);
+      const matchesCat = selectedCategory === 'Все' || item.category === selectedCategory;
+      const matchesFormat =
+        selectedFormat === 'Все' ||
+        (item.format || '').toLowerCase().includes(selectedFormat.toLowerCase());
+      return matchesSearch && matchesCat && matchesFormat;
+    });
+
+    if (sortByMatch && studentProfile) {
+      return [...base].sort((a, b) => {
+        const scoreA = matchLookup.get(a.id)?.score ?? -1;
+        const scoreB = matchLookup.get(b.id)?.score ?? -1;
+        return scoreB - scoreA;
+      });
+    }
+
+    return base;
+  }, [activities, isAdmin, searchQuery, selectedCategory, selectedFormat, sortByMatch, studentProfile, matchLookup]);
+
+  const categoryFilters = [
+    'Все',
+    ...new Set([
+      ...ACTIVITY_CATEGORIES.filter(category => category !== 'Другое'),
+      ...activities.map(activity => activity.category).filter(Boolean)
+    ])
+  ];
+
   const userName = authUser?.user_metadata?.full_name || authUser?.email;
+  const savedCountry = studentProfile ? getCountryById(studentProfile.country) : null;
+  const savedMajor = studentProfile ? getMajorById(studentProfile.major) : null;
+
+  const navItems = [
+    ['catalog', 'Каталог'],
+    ['advisor', 'Подбор по целям'],
+    ['scholarships', 'Стипендии'],
+    ['profile', `Профиль (${Object.keys(favorites).length})`]
+  ];
+  if (isAdmin) {
+    navItems.push(['admin', 'Админ-панель']);
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
-      {/* Шапка */}
-      <header className="bg-indigo-900 text-white shadow-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex flex-col sm:flex-row justify-between items-center gap-4">
-          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setActiveTab('catalog')}>
-            <div className="bg-indigo-600 p-2.5 rounded-xl shadow-inner">
-              <Sparkles className="w-6 h-6 text-amber-300" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight">EduPulse CIS</h1>
-              <p className="text-xs text-indigo-300">Внеучебные активности для поступления за рубеж</p>
-            </div>
-          </div>
+      <header className="relative md:sticky md:top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto flex h-14 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 md:h-16 md:gap-8">
+          <button
+            type="button"
+            onClick={() => setActiveTab('catalog')}
+            className="flex items-center gap-2.5 text-left whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 rounded-lg"
+          >
+            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-700 text-white">
+              <Sparkles className="h-4 w-4" />
+            </span>
+            <span className="font-display text-lg font-bold tracking-tight text-slate-900">
+              EduPulse CIS
+            </span>
+          </button>
 
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <button 
-              onClick={() => setActiveTab('catalog')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition ${activeTab === 'catalog' ? 'bg-indigo-700 text-white shadow' : 'text-indigo-200 hover:bg-indigo-800'}`}
-            >
-              Каталог
-            </button>
-            <button 
-              onClick={() => setActiveTab('profile')}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-1.5 ${activeTab === 'profile' ? 'bg-indigo-700 text-white shadow' : 'text-indigo-200 hover:bg-indigo-800'}`}
-            >
-              <Bookmark className="w-4 h-4 text-amber-400" />
-              Моё портфолио ({Object.keys(favorites).length})
-            </button>
-            {isAdmin && (
-              <button 
-                onClick={() => setActiveTab('admin')}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-1.5 ${activeTab === 'admin' ? 'bg-indigo-700 text-white shadow' : 'text-indigo-200 hover:bg-indigo-800'}`}
+          <nav className="hidden md:flex items-center gap-6" aria-label="Основная навигация">
+            {navItems.map(([tabId, label]) => (
+              <button
+                key={tabId}
+                type="button"
+                onClick={() => setActiveTab(tabId)}
+                className={`border-b-2 py-1 text-sm font-medium transition-colors whitespace-nowrap shrink-0 ${
+                  activeTab === tabId
+                    ? 'border-indigo-700 text-indigo-700 font-semibold'
+                    : 'border-transparent text-slate-600 hover:text-slate-900'
+                }`}
               >
-                <Shield className="w-4 h-4 text-emerald-400" />
-                Админ-панель
+                {label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setActiveTab('admin')}
+                className={`inline-flex md:hidden min-h-[40px] items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                  activeTab === 'admin'
+                    ? 'bg-indigo-700 text-white'
+                    : 'border border-slate-200 bg-white text-slate-700'
+                }`}
+              >
+                <Shield className="h-3.5 w-3.5" />
+                Админ
               </button>
             )}
             {authUser ? (
-              <>
-                <span className="text-xs text-indigo-200 hidden lg:inline">{userName}</span>
+              <div className="flex items-center gap-3">
+                <span className="hidden lg:inline max-w-[180px] truncate text-xs font-medium text-slate-600">
+                  {userName}
+                </span>
                 <button
+                  type="button"
                   onClick={handleLogout}
-                  className="px-3 py-2 rounded-lg text-sm font-medium text-indigo-200 hover:bg-indigo-800 transition flex items-center gap-1.5"
+                  className="inline-flex min-h-[40px] items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 whitespace-nowrap shrink-0"
                 >
-                  <LogOut className="w-4 h-4" /> Выйти
+                  <LogOut className="h-3.5 w-3.5" />
+                  Выйти
                 </button>
-              </>
+              </div>
             ) : (
               <button
+                type="button"
                 onClick={() => { setAuthMode('login'); setAuthMessage(''); setAuthModalOpen(true); }}
                 disabled={authLoading}
-                className="px-4 py-2 rounded-lg text-sm font-medium bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 transition"
+                className="min-h-[40px] rounded-xl bg-indigo-700 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-indigo-800 disabled:opacity-60 whitespace-nowrap shrink-0"
               >
                 Войти
               </button>
@@ -470,11 +657,10 @@ export default function App() {
         </div>
       </header>
 
-      {/* Основной контент */}
-      <main className="max-w-7xl mx-auto px-4 py-8">
+      <main className="mx-auto max-w-7xl px-4 pt-5 pb-24 sm:px-6 md:py-8">
         {!isSupabaseConfigured && (
           <div className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
-            Supabase не настроен. Создайте `.env.local` с `VITE_SUPABASE_URL` и `VITE_SUPABASE_PUBLISHABLE_KEY`, затем перезапустите сайт.
+            Supabase не настроен. Создайте `.env.local` с `VITE_SUPABASE_URL` и `VITE_SUPABASE_PUBLISHABLE_KEY`, чтобы загрузить живой каталог и авторизацию. Разделы «Подбор по целям», «Стипендии» и «Профиль» доступны уже сейчас.
           </div>
         )}
         {errorMessage && (
@@ -487,264 +673,344 @@ export default function App() {
             {authMessage}
           </div>
         )}
-        {activitiesLoading && isSupabaseConfigured && (
-          <div className="mb-6 text-center text-sm text-slate-500">Загрузка активностей...</div>
-        )}
-        
-        {/* ВКЛАДКА: КАТАЛОГ */}
+
         {activeTab === 'catalog' && (
-          <div>
-            {/* Блок поиска и фильтров */}
-            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 mb-8">
-              <div className="flex flex-col md:flex-row gap-4 mb-4">
+          <div className="space-y-6">
+            <section className="rounded-2xl border border-slate-200 bg-white p-6 sm:p-8">
+              <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+                <div className="max-w-2xl space-y-2">
+                  <h1 className="text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
+                    Внеучебные активности для поступления за рубеж
+                  </h1>
+                  <p className="text-sm leading-relaxed text-slate-600">
+                    Олимпиады, хакатоны, Game Jams, стажировки и волонтёрские программы для школьников и студентов из стран СНГ.
+                  </p>
+                </div>
+
+                {studentProfile && savedCountry && savedMajor ? (
+                  <div className="flex flex-wrap items-center gap-3 rounded-xl bg-slate-50 px-4 py-3 border border-slate-200">
+                    <div className="text-xs">
+                      <div className="text-slate-500">Ваш трек</div>
+                      <div className="font-bold text-slate-900">
+                        {savedCountry.shortName} · {savedMajor.shortName}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSortByMatch(v => !v)}
+                      className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+                        sortByMatch
+                          ? 'bg-indigo-700 text-white'
+                          : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      {sortByMatch ? 'Сначала подходящие' : 'Сортировать под цель'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('advisor')}
+                      className="text-xs font-semibold text-indigo-700 hover:underline whitespace-nowrap shrink-0"
+                    >
+                      План →
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('advisor')}
+                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-700 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-indigo-800 whitespace-nowrap shrink-0"
+                  >
+                    <Compass className="h-4 w-4" />
+                    Подобрать под вашу цель
+                    <ArrowRight className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+              <div className="flex flex-col gap-3 md:flex-row">
                 <div className="relative flex-1">
-                  <Search className="absolute left-3.5 top-3.5 w-5 h-5 text-slate-400" />
-                  <input 
+                  <Search className="pointer-events-none absolute left-3.5 top-3 h-4 w-4 text-slate-400" />
+                  <input
                     type="text"
-                    placeholder="Поиск по названию олимпиады, стажировки или описанию..."
+                    placeholder="Поиск по названию олимпиады, хакатона, стажировки или описанию..."
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
+                    onChange={e => setSearchQuery(e.target.value)}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 py-2.5 pl-10 pr-4 text-sm focus:border-indigo-600 focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-600/20"
                   />
                 </div>
+
+                <select
+                  aria-label="Фильтр по формату"
+                  value={selectedFormat}
+                  onChange={e => setSelectedFormat(e.target.value)}
+                  className="rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 text-sm font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-600"
+                >
+                  <option value="Все">Все форматы</option>
+                  <option value="Онлайн">Онлайн</option>
+                  <option value="Очно">Очно</option>
+                  <option value="Гибрид">Гибрид</option>
+                </select>
+
                 {isAdmin && (
-                  <button 
+                  <button
+                    type="button"
                     onClick={openNewEventModal}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-3 rounded-xl font-medium text-sm flex items-center justify-center gap-2 shadow-sm transition"
+                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-700 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-indigo-800 whitespace-nowrap shrink-0"
                   >
-                    <Plus className="w-5 h-5" /> Добавить ивент
+                    <Plus className="h-4 w-4" />
+                    Добавить ивент
                   </button>
                 )}
               </div>
 
-              {/* Фильтры категорий */}
-              <div className="flex flex-wrap gap-2 items-center pt-2 border-t border-slate-100">
-                <span className="text-xs font-semibold uppercase tracking-wider text-slate-400 mr-2">Категория:</span>
+              <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
+                <span className="mr-1 text-xs font-medium text-slate-500">Категория:</span>
                 {categoryFilters.map(cat => (
                   <button
                     key={cat}
+                    type="button"
                     onClick={() => setSelectedCategory(cat)}
-                    className={`px-3.5 py-1.5 rounded-lg text-xs font-medium transition ${selectedCategory === cat ? 'bg-indigo-600 text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
+                      selectedCategory === cat
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
                   >
                     {cat}
                   </button>
                 ))}
               </div>
-            </div>
+            </section>
 
-            {/* Список карточек */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {activitiesLoading && isSupabaseConfigured && (
+              <div className="py-6 text-center text-sm text-slate-500">Загрузка активностей...</div>
+            )}
+
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
               {filteredActivities.map(item => {
-                const isFav = !!favorites[item.id];
+                const isFav = Boolean(favorites[item.id]);
+                const matchEntry = sortByMatch ? matchLookup.get(item.id) : null;
                 return (
-                  <div key={item.id} className={`bg-white rounded-2xl border ${item.active ? 'border-slate-200 shadow-sm hover:shadow-md' : 'border-amber-200 bg-amber-50/30 opacity-75'} transition flex flex-col justify-between overflow-hidden`}>
-                    <div className="p-6">
-                      <div className="flex justify-between items-start gap-4 mb-3">
-                        <span className="px-3 py-1 bg-indigo-50 text-indigo-700 text-xs font-semibold rounded-full">
-                          {item.category}
-                        </span>
-                        <div className="flex items-center gap-2">
-                          {!item.active && (
-                            <span className="text-xs bg-amber-100 text-amber-800 px-2 py-0.5 rounded font-medium">Неактивен</span>
+                  <article
+                    key={item.id}
+                    className={`flex flex-col justify-between rounded-2xl border bg-white p-6 transition-shadow ${
+                      item.active
+                        ? 'border-slate-200 hover:shadow-sm'
+                        : 'border-amber-200 bg-amber-50/30 opacity-80'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="text-xs font-medium text-slate-500">
+                          <span className="font-semibold text-indigo-700">{item.category}</span>
+                          {item.format && (
+                            <>
+                              <span className="mx-1.5" aria-hidden="true">·</span>
+                              <span>{item.format}</span>
+                            </>
                           )}
-                          <button 
-                            onClick={() => toggleFavorite(item.id)}
-                            className={`p-2 rounded-xl transition ${isFav ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-400 hover:text-slate-600'}`}
-                            title={isFav ? "Убрать из портфолио" : "Добавить в портфолио"}
-                          >
-                            <Bookmark className={`w-4 h-4 ${isFav ? 'fill-current text-amber-500' : ''}`} />
-                          </button>
+                          {!item.active && (
+                            <>
+                              <span className="mx-1.5" aria-hidden="true">·</span>
+                              <span className="font-semibold text-amber-700">Скрыт</span>
+                            </>
+                          )}
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => toggleFavorite(item.id)}
+                          aria-label={isFav ? 'Убрать из портфолио' : 'Добавить в портфолио'}
+                          className={`rounded-lg p-2 transition-colors ${
+                            isFav
+                              ? 'bg-amber-50 text-amber-600'
+                              : 'text-slate-400 hover:bg-slate-100 hover:text-slate-700'
+                          }`}
+                          title={isFav ? 'Убрать из портфолио' : 'Добавить в портфолио'}
+                        >
+                          <Bookmark className={`h-4 w-4 ${isFav ? 'fill-current' : ''}`} />
+                        </button>
                       </div>
 
-                      <h3 className="font-bold text-lg text-slate-900 mb-2 leading-snug">{item.title}</h3>
-                      <p className="text-slate-600 text-sm mb-4 line-clamp-3">{item.description}</p>
+                      <h2 className="mt-2 font-display text-lg font-bold leading-snug text-slate-900">
+                        {item.title}
+                      </h2>
+                      <p className="mt-2 line-clamp-3 text-sm leading-relaxed text-slate-600">
+                        {item.description}
+                      </p>
 
-                      <div className="space-y-2 text-xs text-slate-500">
+                      {matchEntry && matchEntry.reasons.length > 0 && (
+                        <p className="mt-3 rounded-lg bg-indigo-50/70 px-3 py-2 text-xs font-medium text-indigo-800">
+                          Подходит под цель: {matchEntry.reasons[0]}
+                        </p>
+                      )}
+
+                      <div className="mt-4 space-y-1.5 text-xs text-slate-600">
                         <div className="flex items-center gap-2">
-                          <Clock className="w-4 h-4 text-slate-400" />
-                          <span>Дедлайн: <strong className="text-slate-700">{item.deadline}</strong></span>
+                          <Clock className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                          <span>
+                            Дедлайн:{' '}
+                            <strong className="font-semibold text-slate-800 tabular-nums">
+                              {item.deadline || 'Открытый набор'}
+                            </strong>
+                          </span>
                         </div>
                         <div className="flex items-center gap-2">
-                          <MapPin className="w-4 h-4 text-slate-400" />
-                          <span>Место: <strong className="text-slate-700">{item.location}</strong></span>
+                          <MapPin className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                          <span>
+                            Место: <strong className="font-semibold text-slate-800">{item.location || 'Онлайн'}</strong>
+                          </span>
                         </div>
                         <div className="flex items-center gap-2">
-                          <Users className="w-4 h-4 text-slate-400" />
-                          <span>Возраст: <strong className="text-slate-700">{item.age}</strong></span>
+                          <Users className="h-3.5 w-3.5 shrink-0 text-slate-400" />
+                          <span>
+                            Возраст: <strong className="font-semibold text-slate-800 tabular-nums">{item.age || 'Любой'}</strong>
+                          </span>
                         </div>
                       </div>
                     </div>
 
-                    <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
-                      <span className="text-xs font-medium text-slate-500">{item.format}</span>
+                    <div className="mt-5 flex items-center justify-between gap-3 border-t border-slate-100 pt-4">
+                      <span className="text-xs text-slate-500">{item.format || 'Формат уточняется'}</span>
                       {item.link ? (
-                        <a 
-                          href={item.link} 
-                          target="_blank" 
+                        <a
+                          href={item.link}
+                          target="_blank"
                           rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-xl transition shadow-sm"
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-700 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-indigo-800 whitespace-nowrap shrink-0"
                         >
-                          Регистрация <ExternalLink className="w-3.5 h-3.5" />
+                          Регистрация
+                          <ExternalLink className="h-3.5 w-3.5" />
                         </a>
                       ) : (
                         <span className="text-xs text-slate-400">Скоро ссылка</span>
                       )}
                     </div>
-                  </div>
+                  </article>
                 );
               })}
             </div>
 
             {!activitiesLoading && filteredActivities.length === 0 && (
-              <div className="text-center py-16 bg-white rounded-2xl border border-slate-200">
-                <p className="text-slate-500 text-base">Активностей по вашему запросу не найдено.</p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ВКЛАДКА: ПРОФИЛЬ / ПОРТФОЛИО */}
-        {activeTab === 'profile' && (
-          <div className="max-w-4xl mx-auto">
-            {authUser && (
-              <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-                <h2 className="text-xl font-bold text-slate-900">Аккаунт</h2>
-                <div className="mt-4">
-                  <label htmlFor="account-email" className="mb-1 block text-xs font-medium text-slate-600">Электронная почта</label>
-                  <input
-                    id="account-email"
-                    type="email"
-                    readOnly
-                    value={authUser.email || ''}
-                    className="w-full cursor-not-allowed rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600"
-                  />
-                </div>
-                <p className="mt-3 text-xs leading-5 text-slate-500">
-                  Пароль нельзя посмотреть: Supabase не хранит его в читаемом виде. Здесь можно задать новый пароль.
+              <div className="rounded-2xl border border-slate-200 bg-white py-14 text-center">
+                <p className="text-sm font-medium text-slate-600">
+                  Активностей по вашему запросу не найдено.
                 </p>
-                <form onSubmit={handlePasswordChange} className="mt-5 space-y-3">
-                  {accountError && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{accountError}</p>}
-                  {accountMessage && <p role="status" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">{accountMessage}</p>}
-                  <div>
-                    <label htmlFor="new-password" className="mb-1 block text-xs font-medium text-slate-600">Новый пароль</label>
-                    <input
-                      id="new-password"
-                      type="password"
-                      autoComplete="new-password"
-                      minLength={6}
-                      required
-                      value={newPassword}
-                      onChange={e => setNewPassword(e.target.value)}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                  </div>
-                  <div>
-                    <label htmlFor="confirm-password" className="mb-1 block text-xs font-medium text-slate-600">Повторите новый пароль</label>
-                    <input
-                      id="confirm-password"
-                      type="password"
-                      autoComplete="new-password"
-                      minLength={6}
-                      required
-                      value={confirmPassword}
-                      onChange={e => setConfirmPassword(e.target.value)}
-                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={passwordSubmitting || resetEmailSubmitting}
-                    className="rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {passwordSubmitting ? 'Сохранение...' : 'Изменить пароль'}
-                  </button>
+                {(selectedCategory !== 'Все' || selectedFormat !== 'Все' || searchQuery) && (
                   <button
                     type="button"
-                    onClick={handlePasswordResetEmail}
-                    disabled={passwordSubmitting || resetEmailSubmitting}
-                    className="ml-3 rounded-xl px-4 py-2.5 text-sm font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => {
+                      setSearchQuery('');
+                      setSelectedCategory('Все');
+                      setSelectedFormat('Все');
+                    }}
+                    className="mt-3 text-xs font-semibold text-indigo-700 hover:underline"
                   >
-                    {resetEmailSubmitting ? 'Отправка письма...' : 'Не работает? Отправить ссылку для сброса'}
+                    Сбросить фильтры
                   </button>
-                </form>
-              </section>
+                )}
+              </div>
             )}
-            <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-6 flex items-center justify-between">
-              <div>
-                <h2 className="text-xl font-bold text-slate-900">Моё студенческое портфолио</h2>
-                <p className="text-sm text-slate-500">Сохраненные активности, которые вы планируете посетить</p>
-              </div>
-              <div className="bg-indigo-50 text-indigo-700 px-4 py-2 rounded-xl text-sm font-semibold">
-                Сохранено: {Object.keys(favorites).length} ивентов
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              {Object.keys(favorites).length === 0 ? (
-                <div className="text-center py-16 bg-white rounded-2xl border border-slate-200">
-                  <Bookmark className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-                  <p className="text-slate-600 font-medium">Ваше портфолио пока пусто</p>
-                  <p className="text-slate-400 text-sm mt-1">Нажмите на звёздочку/закладку на любой карточке в каталоге, чтобы сохранить её.</p>
-                </div>
-              ) : (
-                activities
-                  .filter(item => favorites[item.id])
-                  .map(item => (
-                    <div key={item.id} className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1">
-                          <span className="px-2.5 py-0.5 bg-indigo-50 text-indigo-700 text-xs font-semibold rounded-full">
-                            {item.category}
-                          </span>
-                          <span className="text-xs text-slate-400 flex items-center gap-1">
-                            <Clock className="w-3.5 h-3.5" /> Дедлайн: {item.deadline}
-                          </span>
-                        </div>
-                        <h4 className="font-bold text-base text-slate-900">{item.title}</h4>
-                        <p className="text-slate-600 text-xs line-clamp-1 mt-0.5">{item.description}</p>
-                      </div>
-
-                      <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
-                        {item.link && (
-                          <a 
-                            href={item.link} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-medium rounded-xl transition"
-                          >
-                            Ссылка
-                          </a>
-                        )}
-                        <button 
-                          onClick={() => toggleFavorite(item.id)}
-                          className="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 text-xs font-medium rounded-xl transition"
-                        >
-                          Удалить
-                        </button>
-                      </div>
-                    </div>
-                  ))
-              )}
-            </div>
           </div>
         )}
 
-        {/* ВКЛАДКА: ПАНЕЛЬ АДМИНА */}
+        {(activeTab === 'advisor' || activeTab === 'scholarships') && (
+          <div className="mb-5 grid grid-cols-2 gap-1 rounded-xl bg-slate-200/70 p-1 md:hidden">
+            <button
+              type="button"
+              onClick={() => setActiveTab('advisor')}
+              className={`min-h-[44px] rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
+                activeTab === 'advisor' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
+              }`}
+            >
+              Подбор по целям
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('scholarships')}
+              className={`min-h-[44px] rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
+                activeTab === 'scholarships' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600'
+              }`}
+            >
+              Стипендии стран
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'advisor' && (
+          <GoalAdvisorQuiz
+            savedProfile={studentProfile}
+            onSaveProfile={handleSaveStudentProfile}
+            activities={activities}
+            favorites={favorites}
+            onToggleFavorite={toggleFavorite}
+            onFilterCatalogByCategory={category => {
+              setSelectedCategory(category);
+              setActiveTab('catalog');
+            }}
+            onOpenScholarships={countryId => {
+              setScholarshipRegion(countryId || 'all');
+              setActiveTab('scholarships');
+            }}
+          />
+        )}
+
+        {activeTab === 'scholarships' && (
+          <ScholarshipsGuide
+            initialCountry={scholarshipRegion}
+            onStartQuiz={() => setActiveTab('advisor')}
+          />
+        )}
+
+        {activeTab === 'profile' && (
+          <StudentProfilePanel
+            authUser={authUser}
+            isAdmin={isAdmin}
+            onOpenAdmin={() => setActiveTab('admin')}
+            demographicInfo={demographicInfo}
+            onSaveDemographicInfo={handleSaveDemographicInfo}
+            studentProfile={studentProfile}
+            completedChecklist={completedChecklist}
+            onToggleChecklistItem={handleToggleChecklistItem}
+            onOpenQuiz={() => setActiveTab('advisor')}
+            onOpenAuth={() => { setAuthMode('login'); setAuthMessage(''); setAuthModalOpen(true); }}
+            activities={activities}
+            favorites={favorites}
+            onUpdateFavoritePriority={updateFavoritePriority}
+            onRemoveFavorite={removeFavorite}
+            onOpenCatalog={() => setActiveTab('catalog')}
+            newPassword={newPassword}
+            setNewPassword={setNewPassword}
+            confirmPassword={confirmPassword}
+            setConfirmPassword={setConfirmPassword}
+            passwordSubmitting={passwordSubmitting}
+            resetEmailSubmitting={resetEmailSubmitting}
+            accountMessage={accountMessage}
+            accountError={accountError}
+            onPasswordChange={handlePasswordChange}
+            onPasswordResetEmail={handlePasswordResetEmail}
+          />
+        )}
+
         {activeTab === 'admin' && isAdmin && (
-          <div className="max-w-5xl mx-auto">
-            <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-200 mb-6">
+          <div className="mx-auto max-w-5xl space-y-6">
+            <div className="rounded-2xl border border-slate-200 bg-white p-6">
               <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h2 className="text-xl font-bold text-slate-900">Панель администратора</h2>
-                  <p className="text-sm text-slate-500">Управление объявлениями, пользователями и Telegram-черновиками</p>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Управление объявлениями, пользователями и Telegram-черновиками
+                  </p>
                 </div>
                 {adminSection === 'activities' && (
                   <button
+                    type="button"
                     onClick={openNewEventModal}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-xl font-medium text-sm flex items-center gap-2 shadow-sm transition"
+                    className="inline-flex items-center gap-2 rounded-xl bg-indigo-700 px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-indigo-800 whitespace-nowrap shrink-0"
                   >
-                    <Plus className="w-4 h-4" /> Создать ивент
+                    <Plus className="h-4 w-4" />
+                    Создать ивент
                   </button>
                 )}
               </div>
@@ -756,8 +1022,13 @@ export default function App() {
                 ].map(([section, label]) => (
                   <button
                     key={section}
+                    type="button"
                     onClick={() => setAdminSection(section)}
-                    className={`rounded-lg px-4 py-2 text-sm font-medium transition ${adminSection === section ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                    className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors whitespace-nowrap shrink-0 ${
+                      adminSection === section
+                        ? 'bg-slate-900 text-white'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
                   >
                     {label}
                   </button>
@@ -766,84 +1037,128 @@ export default function App() {
             </div>
 
             {adminSection === 'activities' && (
-              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                      <th className="p-4">Название / Категория</th>
-                      <th className="p-4">Дедлайн</th>
-                      <th className="p-4">Статус</th>
-                      <th className="p-4 text-right">Действия</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-sm">
-                    {activities.map(item => (
-                      <tr key={item.id} className="hover:bg-slate-50/50 transition">
-                        <td className="p-4">
-                          <div className="font-bold text-slate-900">{item.title}</div>
-                          <div className="text-xs text-slate-400">{item.category} • {item.format}</div>
-                        </td>
-                        <td className="p-4 text-slate-600 text-xs">{item.deadline}</td>
-                        <td className="p-4">
-                          <button 
-                            onClick={() => handleToggleActive(item)}
-                            className={`px-3 py-1 rounded-full text-xs font-semibold transition ${item.active ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'}`}
-                          >
-                            {item.active ? 'Активен' : 'Скрыт'}
-                          </button>
-                        </td>
-                        <td className="p-4 text-right space-x-2">
-                          {item.link && (
-                            <a 
-                              href={item.link} 
-                              target="_blank" 
-                              rel="noopener noreferrer"
-                              className="inline-block p-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg text-xs"
-                              title="Открыть ссылку"
-                            >
-                              <ExternalLink className="w-4 h-4" />
-                            </a>
-                          )}
-                          <button 
-                            onClick={() => handleDeleteEvent(item.id)}
-                            className="inline-block p-2 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg text-xs"
-                            title="Удалить ивент"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </td>
+              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500">
+                        <th className="p-4">Название / Категория</th>
+                        <th className="p-4">Дедлайн</th>
+                        <th className="p-4">Статус</th>
+                        <th className="p-4 text-right">Действия</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-sm">
+                      {activities.map(item => (
+                        <tr key={item.id} className="transition-colors hover:bg-slate-50/60">
+                          <td className="p-4">
+                            <div className="font-bold text-slate-900">{item.title}</div>
+                            <div className="text-xs text-slate-500">{item.category} · {item.format}</div>
+                          </td>
+                          <td className="p-4 text-xs text-slate-600 tabular-nums">{item.deadline || '—'}</td>
+                          <td className="p-4">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleActive(item)}
+                              className={`rounded-lg border px-3 py-1 text-xs font-semibold transition-colors ${
+                                item.active
+                                  ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                  : 'border-amber-200 bg-amber-50 text-amber-700'
+                              }`}
+                            >
+                              {item.active ? 'Активен' : 'Скрыт'}
+                            </button>
+                          </td>
+                          <td className="p-4 text-right space-x-2">
+                            {item.link && (
+                              <a
+                                href={item.link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-block rounded-lg bg-slate-100 p-2 text-xs text-slate-600 hover:bg-slate-200"
+                                title="Открыть ссылку"
+                              >
+                                <ExternalLink className="h-4 w-4" />
+                              </a>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteEvent(item.id)}
+                              className="inline-block rounded-lg bg-rose-50 p-2 text-xs text-rose-600 hover:bg-rose-100"
+                              title="Удалить ивент"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
             {adminSection === 'users' && <AdminUsersPanel currentUserId={authUser?.id} />}
             {adminSection === 'telegram' && <TelegramInboxPanel onSelectDraft={handleSelectTelegramDraft} />}
           </div>
         )}
-
       </main>
 
-      {/* МОДАЛЬНОЕ ОКНО СОЗДАНИЯ ИВЕНТА */}
+      <nav
+        aria-label="Нижняя мобильная навигация"
+        className="fixed bottom-0 left-0 right-0 z-40 grid h-16 grid-cols-3 border-t border-slate-200 bg-white/95 backdrop-blur-md md:hidden"
+      >
+        <button
+          type="button"
+          onClick={() => setActiveTab('catalog')}
+          className={`flex flex-col items-center justify-center gap-1 text-[11px] font-semibold transition-colors ${
+            activeTab === 'catalog' ? 'text-indigo-700' : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <LayoutGrid className="h-5 w-5" />
+          <span>Ивенты</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('advisor')}
+          className={`flex flex-col items-center justify-center gap-1 text-[11px] font-semibold transition-colors ${
+            activeTab === 'advisor' || activeTab === 'scholarships'
+              ? 'text-indigo-700'
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Compass className="h-5 w-5" />
+          <span>Разбор</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('profile')}
+          className={`flex flex-col items-center justify-center gap-1 text-[11px] font-semibold transition-colors ${
+            activeTab === 'profile' ? 'text-indigo-700' : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <User className="h-5 w-5" />
+          <span>Профиль</span>
+        </button>
+      </nav>
+
       {isModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-xl border border-slate-200">
-            <div className="flex justify-between items-center mb-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+            <div className="mb-4 flex items-center justify-between">
               <h3 className="text-lg font-bold text-slate-900">
                 {pendingDraft ? 'Проверка Telegram-черновика' : 'Новое объявление об ивенте'}
               </h3>
-              <button onClick={closeEventModal} className="p-1 rounded-lg text-slate-400 hover:bg-slate-100">
-                <X className="w-5 h-5" />
+              <button type="button" onClick={closeEventModal} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100">
+                <X className="h-5 w-5" />
               </button>
             </div>
 
             <form onSubmit={handleCreateEvent} className="space-y-4">
               {pendingDraft && (
                 <section className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                  <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Оригинальный пересланный пост</h4>
+                  <h4 className="mb-2 text-xs font-semibold text-slate-500">Оригинальный пересланный пост</h4>
                   <TelegramMessageText
                     text={pendingDraft.message_text}
                     entities={pendingDraft.message_entities}
@@ -855,26 +1170,28 @@ export default function App() {
                 <p role="alert" className="text-sm text-rose-700">{errorMessage}</p>
               )}
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Название активности</label>
-                <input 
-                  type="text" 
+                <label className="mb-1 block text-xs font-medium text-slate-600">Название активности</label>
+                <input
+                  type="text"
                   required
                   value={newEvent.title}
-                  onChange={e => setNewEvent({...newEvent, title: e.target.value})}
+                  onChange={e => setNewEvent({ ...newEvent, title: e.target.value })}
                   placeholder="Например: Хакатон по AI для молодежи"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-600"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Категория</label>
-                  <select 
+                  <label className="mb-1 block text-xs font-medium text-slate-600">Категория</label>
+                  <select
                     value={newEvent.category}
                     onChange={e => setNewEvent({ ...newEvent, category: e.target.value, customCategory: '' })}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-600"
                   >
-                    {ACTIVITY_CATEGORIES.map(category => <option key={category} value={category}>{category}</option>)}
+                    {ACTIVITY_CATEGORIES.map(category => (
+                      <option key={category} value={category}>{category}</option>
+                    ))}
                   </select>
                   {newEvent.category === 'Другое' && (
                     <input
@@ -883,16 +1200,16 @@ export default function App() {
                       value={newEvent.customCategory}
                       onChange={e => setNewEvent({ ...newEvent, customCategory: e.target.value })}
                       placeholder="Введите свою категорию"
-                      className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      className="mt-2 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-600"
                     />
                   )}
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Формат</label>
-                  <select 
+                  <label className="mb-1 block text-xs font-medium text-slate-600">Формат</label>
+                  <select
                     value={newEvent.format}
-                    onChange={e => setNewEvent({...newEvent, format: e.target.value})}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    onChange={e => setNewEvent({ ...newEvent, format: e.target.value })}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-600"
                   >
                     <option value="Онлайн">Онлайн</option>
                     <option value="Очно">Очно</option>
@@ -903,71 +1220,71 @@ export default function App() {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Дедлайн</label>
-                  <input 
-                    type="date" 
+                  <label className="mb-1 block text-xs font-medium text-slate-600">Дедлайн</label>
+                  <input
+                    type="date"
                     value={newEvent.deadline}
-                    onChange={e => setNewEvent({...newEvent, deadline: e.target.value})}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    onChange={e => setNewEvent({ ...newEvent, deadline: e.target.value })}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-600"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Возраст / Аудитория</label>
-                  <input 
-                    type="text" 
+                  <label className="mb-1 block text-xs font-medium text-slate-600">Возраст / Аудитория</label>
+                  <input
+                    type="text"
                     value={newEvent.age}
-                    onChange={e => setNewEvent({...newEvent, age: e.target.value})}
+                    onChange={e => setNewEvent({ ...newEvent, age: e.target.value })}
                     placeholder="14–18 лет"
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-600"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Страна / место проведения</label>
-                <input 
-                  type="text" 
+                <label className="mb-1 block text-xs font-medium text-slate-600">Страна / место проведения</label>
+                <input
+                  type="text"
                   value={newEvent.location}
-                  onChange={e => setNewEvent({...newEvent, location: e.target.value})}
+                  onChange={e => setNewEvent({ ...newEvent, location: e.target.value })}
                   placeholder="Ташкент / Онлайн"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-600"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Ссылка на регистрацию (Кнопка)</label>
-                <input 
-                  type="url" 
+                <label className="mb-1 block text-xs font-medium text-slate-600">Ссылка на регистрацию (Кнопка)</label>
+                <input
+                  type="url"
                   value={newEvent.link}
-                  onChange={e => setNewEvent({...newEvent, link: e.target.value})}
+                  onChange={e => setNewEvent({ ...newEvent, link: e.target.value })}
                   placeholder="https://example.com/register"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-600"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Описание</label>
-                <textarea 
+                <label className="mb-1 block text-xs font-medium text-slate-600">Описание</label>
+                <textarea
                   rows="3"
                   required
                   value={newEvent.description}
-                  onChange={e => setNewEvent({...newEvent, description: e.target.value})}
+                  onChange={e => setNewEvent({ ...newEvent, description: e.target.value })}
                   placeholder="Подробности об активности..."
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-600"
                 ></textarea>
               </div>
 
               <div className="flex justify-end gap-3 pt-2">
-                <button 
-                  type="button" 
+                <button
+                  type="button"
                   onClick={closeEventModal}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-xl text-xs font-medium transition"
+                  className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-200"
                 >
                   Отмена
                 </button>
-                <button 
-                  type="submit" 
-                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-medium transition shadow-sm"
+                <button
+                  type="submit"
+                  className="rounded-xl bg-indigo-700 px-5 py-2 text-xs font-semibold text-white transition-colors hover:bg-indigo-800"
                 >
                   Опубликовать
                 </button>
@@ -978,51 +1295,51 @@ export default function App() {
       )}
 
       {authModalOpen && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200">
-            <div className="flex justify-between items-center mb-5">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl">
+            <div className="mb-5 flex items-center justify-between">
               <div>
                 <h2 className="text-lg font-bold text-slate-900">
                   {authMode === 'login' ? 'Вход в аккаунт' : 'Регистрация студента'}
                 </h2>
-                <p className="text-xs text-slate-500 mt-1">Администраторские права назначаются отдельно.</p>
+                <p className="mt-1 text-xs text-slate-500">Администраторские права назначаются отдельно.</p>
               </div>
-              <button onClick={() => setAuthModalOpen(false)} className="p-1 rounded-lg text-slate-400 hover:bg-slate-100">
-                <X className="w-5 h-5" />
+              <button type="button" onClick={() => setAuthModalOpen(false)} className="rounded-lg p-1 text-slate-400 hover:bg-slate-100">
+                <X className="h-5 w-5" />
               </button>
             </div>
             <form onSubmit={handleAuthSubmit} className="space-y-4">
               {authMode === 'register' && (
                 <div>
-                  <label className="block text-xs font-medium text-slate-600 mb-1">Имя</label>
+                  <label className="mb-1 block text-xs font-medium text-slate-600">Имя</label>
                   <input
                     type="text"
                     required
                     value={authForm.name}
                     onChange={e => setAuthForm({ ...authForm, name: e.target.value })}
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm"
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
                   />
                 </div>
               )}
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Электронная почта</label>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Электронная почта</label>
                 <input
                   type="email"
                   required
                   value={authForm.email}
                   onChange={e => setAuthForm({ ...authForm, email: e.target.value })}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
                 />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Пароль</label>
+                <label className="mb-1 block text-xs font-medium text-slate-600">Пароль</label>
                 <input
                   type="password"
                   required
                   minLength={6}
                   value={authForm.password}
                   onChange={e => setAuthForm({ ...authForm, password: e.target.value })}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-sm"
+                  className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
                 />
               </div>
               {errorMessage && (
@@ -1031,21 +1348,21 @@ export default function App() {
               <button
                 type="submit"
                 disabled={authSubmitting}
-                className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-bold rounded-xl transition"
+                className="w-full rounded-xl bg-indigo-700 py-3 text-sm font-bold text-white transition-colors hover:bg-indigo-800 disabled:opacity-60"
               >
                 {authSubmitting ? 'Подождите...' : authMode === 'login' ? 'Войти' : 'Создать аккаунт'}
               </button>
             </form>
             <button
+              type="button"
               onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setAuthMessage(''); setErrorMessage(''); }}
-              className="mt-4 w-full text-center text-xs text-indigo-600 hover:underline font-semibold"
+              className="mt-4 w-full text-center text-xs font-semibold text-indigo-700 hover:underline"
             >
               {authMode === 'login' ? 'Нет аккаунта? Зарегистрируйтесь' : 'Уже есть аккаунт? Войти'}
             </button>
           </div>
         </div>
       )}
-
     </div>
   );
 }

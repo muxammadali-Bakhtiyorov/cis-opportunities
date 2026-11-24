@@ -3,8 +3,56 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CIS Opportunities Hub</title>
+    <title>EduPulse CIS — Каталог активностей и подбор по целям поступления</title>
+    <meta
+      name="description"
+      content="Платформа для школьников и студентов СНГ: олимпиады, хакатоны, стажировки, стипендии и персональный подбор внеучебных активностей под страну и специальность."
+    />
+    <meta property="og:title" content="EduPulse CIS — Каталог активностей и подбор по целям" />
+    <meta
+      property="og:description"
+      content="Олимпиады, хакатоны, стажировки, стипендии и умный подбор активностей для поступления за рубеж."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..700;1,9..40,400..600&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              display: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+              sans: ['"DM Sans"', 'system-ui', 'sans-serif'],
+              mono: ['"JetBrains Mono"', 'monospace']
+            }
+          }
+        }
+      };
+    </script>
+    <style>
+      body {
+        font-family: 'DM Sans', system-ui, -apple-system, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        background-color: #f8fafc;
+        color: #0f172a;
+      }
+      h1, h2, h3, .font-display {
+        font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      }
+      .tabular-nums {
+        font-variant-numeric: tabular-nums;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation-duration: 0.01ms !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
